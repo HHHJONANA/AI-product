@@ -1,0 +1,22 @@
+# 环境变量文件
+.env
+
+# Python虚拟环境
+venv/
+env/
+.venv/
+
+# Python缓存文件
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 日志文件
+*.log
+
+# IDE配置
+.vscode/
+.idea/
+
+# Streamlit缓存
+.streamlit/ 
