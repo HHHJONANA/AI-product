@@ -24,6 +24,18 @@ if "messages" not in st.session_state:
 
 if "memory" not in st.session_state:
     st.session_state.memory = None
+
+if "token_count" not in st.session_state:
+    st.session_state.token_count = 0
+
+if "prompt_tokens" not in st.session_state:
+    st.session_state.prompt_tokens = 0
+    
+if "completion_tokens" not in st.session_state:
+    st.session_state.completion_tokens = 0
+    
+if "total_cost" not in st.session_state:
+    st.session_state.total_cost = 0.0
     
 if "model_name" not in st.session_state:
     st.session_state.model_name = "通义千问"  # 默认使用通义千问
@@ -31,7 +43,7 @@ if "model_name" not in st.session_state:
 # 页面标题
 st.title("🤖 双模型聊天机器人")
 
-# 侧边栏 - 模型选择
+# 侧边栏 - 模型选择和状态显示
 with st.sidebar:
     st.header("设置")
     model_name = st.selectbox(
@@ -49,10 +61,26 @@ with st.sidebar:
     # 添加记忆长度控制
     max_messages = st.slider("保留对话轮数", min_value=1, max_value=10, value=5)
     
+    # 显示Token使用情况
+    st.header("Token使用统计")
+    
+    # 使用列布局展示数据
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("提示词tokens", f"{st.session_state.prompt_tokens}")
+        st.metric("总tokens", f"{st.session_state.token_count}")
+    with col2:
+        st.metric("完成tokens", f"{st.session_state.completion_tokens}")
+        st.metric("总费用($)", f"{st.session_state.total_cost:.6f}")
+    
     # 添加清除会话按钮
-    if st.button("清除会话"):
+    if st.button("清除会话", type="primary"):
         st.session_state.messages = []
         st.session_state.memory = None
+        st.session_state.token_count = 0
+        st.session_state.prompt_tokens = 0
+        st.session_state.completion_tokens = 0
+        st.session_state.total_cost = 0.0
         st.rerun()
 
 # 显示聊天历史
@@ -105,11 +133,39 @@ if user_input:
                 # 添加当前问题
                 full_prompt += f"用户: {user_input}\n助手: "
                 
-                # 直接调用模型
+                # 直接调用invoke方法，避免使用generate可能造成的复杂结构解析问题
                 response = llm.invoke(full_prompt)
                 
-                # 提取响应内容
-                response_text = response.content
+                # 根据返回类型安全地提取文本内容
+                if hasattr(response, 'content'):
+                    # 如果是对象且有content属性
+                    response_text = response.content
+                elif isinstance(response, str):
+                    # 如果直接返回字符串
+                    response_text = response
+                else:
+                    # 如果是其他类型，尝试转换为字符串
+                    response_text = str(response)
+                
+                # 字符数估算token
+                prompt_chars = len(full_prompt)
+                response_chars = len(response_text)
+                
+                # 估算token数 (根据经验值，平均每个字符约占0.6-0.8个token)
+                estimated_prompt_tokens = int(prompt_chars * 0.7) 
+                estimated_completion_tokens = int(response_chars * 0.7)
+                estimated_total_tokens = estimated_prompt_tokens + estimated_completion_tokens
+                
+                # 计算估算费用 (使用GPT-3.5 Turbo标准价格作为参考)
+                prompt_cost = estimated_prompt_tokens * 0.0015 / 1000
+                completion_cost = estimated_completion_tokens * 0.002 / 1000
+                total_cost = prompt_cost + completion_cost
+                
+                # 更新会话状态中的计数器
+                st.session_state.prompt_tokens += estimated_prompt_tokens
+                st.session_state.completion_tokens += estimated_completion_tokens
+                st.session_state.token_count += estimated_total_tokens
+                st.session_state.total_cost += total_cost
                 
                 # 检查回复中是否包含占位符，如果有则替换
                 if "{input}" in response_text:
@@ -136,5 +192,7 @@ if user_input:
                 
             except Exception as e:
                 st.error(f"生成回答时发生错误: {str(e)}")
+                import traceback
+                st.error(traceback.format_exc())
                 st.write("抱歉，我现在无法处理您的请求。请稍后再试。")
                 st.session_state.messages.append({"role": "assistant", "content": "抱歉，我现在无法处理您的请求。请稍后再试。"}) 
