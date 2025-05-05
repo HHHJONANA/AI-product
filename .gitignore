@@ -1,0 +1,11 @@
+# PyCharm
+.idea/
+*.iml
+
+# VS Code
+.vscode/
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
