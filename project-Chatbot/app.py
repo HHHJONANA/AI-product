@@ -2,7 +2,7 @@ import os
 import streamlit as st
 from dotenv import load_dotenv
 from langchain.memory import ConversationBufferMemory
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder, FewShotChatMessagePromptTemplate
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
 # 导入自定义模型工具
@@ -61,6 +61,9 @@ with st.sidebar:
     # 添加记忆长度控制
     max_messages = st.slider("保留对话轮数", min_value=1, max_value=10, value=5)
     
+    # Few-Shot模式开关
+    use_few_shot = st.checkbox("启用Few-Shot学习", value=True)
+    
     # 显示Token使用情况
     st.header("Token使用统计")
     
@@ -92,14 +95,38 @@ for message in st.session_state.messages:
         with st.chat_message("assistant"):
             st.write(message["content"])
 
-# 构建系统提示词
-system_prompt = """你是一个专业、友好且有用的AI助手。
-请直接回答问题，保持回答简洁明了。
-如果你不知道答案，请诚实地说出来，不要编造信息。
-不要在回答中使用{input}或{output}这样的字符。"""
+# 1. 定义示例数据集
+examples = [
+    {"input": "今天星期几？", 
+     "output": "今天是星期二。\n Today is Tuesday."},
+    {"input": "我刚才问你什么问题？", 
+     "output": "你刚才问我今天星期几。\n You asked me what day it is."},
+]
 
-# 创建直接的提示模板，避免使用复杂的格式化
-prompt_template = f"{system_prompt}\n\n"
+# 2. 定义示例格式化模板
+example_prompt = ChatPromptTemplate.from_messages([
+    ("human", "{input}"),
+    ("ai", "{output}")
+])
+
+# 3. 构建few-shot模板主体
+few_shot_prompt = FewShotChatMessagePromptTemplate(
+    examples=examples,
+    example_prompt=example_prompt,
+)
+
+# 构建系统提示词
+system_message = """你是一个专业、友好且有用的AI助手。
+请用中文直接回答问题，保持回答简洁明了。并在下面重复一遍英语翻译"""
+
+# 4. 整合到完整提示流
+prompt_template = ChatPromptTemplate.from_messages([
+    ("system", system_message),
+    # 如果启用Few-Shot，则添加示例
+    # few_shot_prompt将在运行时根据配置添加
+    MessagesPlaceholder(variable_name="history"),
+    ("human", "{input}")
+])
 
 # 获取用户输入
 user_input = st.chat_input("在这里输入您的问题...")
@@ -122,19 +149,39 @@ if user_input:
                 max_pairs = max_messages  # 从侧边栏的滑块获取值
                 recent_messages = st.session_state.messages[-min(len(st.session_state.messages), max_pairs*2-1):-1]
                 
-                # 构建完整提示文本
-                full_prompt = prompt_template
-                
-                # 添加历史消息
+                # 转换历史消息为LangChain消息格式
+                history_messages = []
                 for msg in recent_messages:
-                    prefix = "用户: " if msg["role"] == "user" else "助手: "
-                    full_prompt += f"{prefix}{msg['content']}\n"
+                    if msg["role"] == "user":
+                        history_messages.append(HumanMessage(content=msg["content"]))
+                    else:
+                        history_messages.append(AIMessage(content=msg["content"]))
                 
-                # 添加当前问题
-                full_prompt += f"用户: {user_input}\n助手: "
+                # 根据Few-Shot开关决定是否使用Few-Shot模板
+                if use_few_shot:
+                    # 构建带Few-Shot示例的完整提示
+                    full_prompt = ChatPromptTemplate.from_messages([
+                        ("system", system_message),
+                        few_shot_prompt,  # 添加Few-Shot示例
+                        MessagesPlaceholder(variable_name="history"),
+                        ("human", "{input}")
+                    ])
+                else:
+                    # 使用基本的提示模板
+                    full_prompt = ChatPromptTemplate.from_messages([
+                        ("system", system_message),
+                        MessagesPlaceholder(variable_name="history"),
+                        ("human", "{input}")
+                    ])
                 
-                # 直接调用invoke方法，避免使用generate可能造成的复杂结构解析问题
-                response = llm.invoke(full_prompt)
+                # 使用LangChain提示模板API
+                chain = full_prompt | llm
+                
+                # 调用模型获取响应
+                response = chain.invoke({
+                    "history": history_messages,
+                    "input": user_input
+                })
                 
                 # 根据返回类型安全地提取文本内容
                 if hasattr(response, 'content'):
@@ -147,8 +194,14 @@ if user_input:
                     # 如果是其他类型，尝试转换为字符串
                     response_text = str(response)
                 
-                # 字符数估算token
-                prompt_chars = len(full_prompt)
+                # 估算token使用情况
+                # 估算提示词token
+                system_chars = len(system_message)
+                few_shot_chars = len(str(examples)) if use_few_shot else 0
+                history_chars = sum(len(msg["content"]) for msg in recent_messages)
+                input_chars = len(user_input)
+                
+                prompt_chars = system_chars + few_shot_chars + history_chars + input_chars
                 response_chars = len(response_text)
                 
                 # 估算token数 (根据经验值，平均每个字符约占0.6-0.8个token)
